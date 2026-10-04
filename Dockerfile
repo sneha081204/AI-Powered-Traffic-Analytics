@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install PyTorch CPU-only first (much smaller than default)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+RUN mkdir -p models web/static/uploads web/static/snapshots
+
+ENV PORT=5000
+EXPOSE 5000
+
+CMD gunicorn server:app --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT

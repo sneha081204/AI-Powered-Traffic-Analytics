@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: violawatch
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 5000
+    disk:
+      name: data
+      mountPath: /app/web/static
+      sizeGB: 1
