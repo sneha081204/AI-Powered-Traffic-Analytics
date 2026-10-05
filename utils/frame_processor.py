@@ -4,7 +4,14 @@ import os
 import sys
 from typing import List, Tuple, Dict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(
+            os.path.abspath(__file__)
+        )
+    )
+)
 
 
 class FrameProcessor:
@@ -15,10 +22,17 @@ class FrameProcessor:
         "vehicle": (255, 140, 0),
         "plate": (0, 220, 255),
         "track": (255, 0, 255),
-        "passenger": (120, 120, 120),
+        "person": (255, 200, 0),
+        "head": (0, 165, 255),
+        "unknown": (150, 150, 150),
     }
 
+    # ---------------------------------------------------------
+    # INITIALIZATION
+    # ---------------------------------------------------------
+
     def __init__(self, confidence=0.40):
+
         self.confidence = confidence
 
         self.model = None
@@ -28,49 +42,96 @@ class FrameProcessor:
         self.custom_model = False
         self.class_map = {}
 
-        # ByteTrack
         self.tracker_name = "bytetrack.yaml"
 
         self._load_models()
 
     # ---------------------------------------------------------
-    # MODEL LOADING
+    # LOAD MODELS
     # ---------------------------------------------------------
 
     def _load_models(self):
 
         try:
+
             from ultralytics import YOLO
             import config as cfg
 
-            model_path = getattr(cfg, "HELMET_MODEL", None)
+            # ---------------------------------------------
+            # HELMET MODEL
+            # ---------------------------------------------
+
+            model_path = getattr(
+                cfg,
+                "HELMET_MODEL",
+                None
+            )
 
             if not model_path:
+
                 model_path = self._find_helmet_model()
 
             self.model = YOLO(model_path)
 
-            print(f"[Processor] Helmet model loaded: {model_path}")
+            print(
+                f"[Processor] Helmet model loaded: "
+                f"{model_path}"
+            )
 
             self.custom_model = True
 
-            self._build_class_map(self.model.names)
+            self._build_class_map(
+                self.model.names
+            )
 
-            # COCO model for vehicle + person detection
-            self.coco_model = YOLO("yolov8n.pt")
+            # ---------------------------------------------
+            # COCO MODEL
+            # Person + Car + Motorcycle
+            # ---------------------------------------------
 
-            print("[Processor] COCO vehicle detector loaded")
-            print("[Processor] ByteTrack enabled")
+            self.coco_model = YOLO(
+                "yolov8n.pt"
+            )
 
-            # Plate model is kept compatible with the original project
-            plate_path = getattr(cfg, "PLATE_MODEL", None)
+            print(
+                "[Processor] COCO person/vehicle "
+                "detector loaded"
+            )
 
-            if plate_path and os.path.exists(str(plate_path)):
-                self.plate_model = YOLO(plate_path)
+            print(
+                "[Processor] ByteTrack enabled"
+            )
+
+            # ---------------------------------------------
+            # PLATE MODEL
+            # ---------------------------------------------
+
+            plate_path = getattr(
+                cfg,
+                "PLATE_MODEL",
+                None
+            )
+
+            if (
+                plate_path
+                and os.path.exists(
+                    str(plate_path)
+                )
+            ):
+
+                self.plate_model = YOLO(
+                    plate_path
+                )
+
+                print(
+                    "[Processor] Plate model loaded"
+                )
 
         except Exception as e:
 
-            print(f"[Processor] Model loading error: {e}")
+            print(
+                f"[Processor] Model loading error: {e}"
+            )
 
             self.model = None
             self.coco_model = None
@@ -84,14 +145,21 @@ class FrameProcessor:
         from pathlib import Path
 
         models_dir = (
-            Path(__file__).resolve().parent.parent / "models"
+            Path(__file__).resolve()
+            .parent.parent
+            / "models"
         )
 
         possible_models = [
+
             "helmet_full_half.pt",
+
             "helmet_yolov8n.pt",
+
             "helmet_best.pt",
+
             "best.pt",
+
         ]
 
         for name in possible_models:
@@ -99,7 +167,12 @@ class FrameProcessor:
             path = models_dir / name
 
             if path.exists():
-                print(f"[Processor] Using helmet model: {path}")
+
+                print(
+                    f"[Processor] Using helmet model: "
+                    f"{path}"
+                )
+
                 return str(path)
 
         return "yolov8n.pt"
@@ -114,8 +187,13 @@ class FrameProcessor:
 
         for cid, name in names.items():
 
-            label = str(name).lower().strip()
+            label = (
+                str(name)
+                .lower()
+                .strip()
+            )
 
+            # Helmet present
             if (
                 "full" in label
                 or "half" in label
@@ -129,6 +207,7 @@ class FrameProcessor:
 
                 self.class_map[cid] = "yes"
 
+            # Helmet violation
             elif (
                 "invalid" in label
                 or "no helmet" in label
@@ -152,7 +231,7 @@ class FrameProcessor:
         )
 
     # ---------------------------------------------------------
-    # MAIN PROCESS FUNCTION
+    # MAIN PROCESS
     # ---------------------------------------------------------
 
     def process(
@@ -166,19 +245,24 @@ class FrameProcessor:
 
         try:
 
-            return self._run_detection(frame)
+            return self._run_detection(
+                frame
+            )
 
         except Exception as e:
 
-            print(f"[Processor] Detection error: {e}")
+            print(
+                f"[Processor] Detection error: {e}"
+            )
 
             import traceback
+
             traceback.print_exc()
 
             return frame.copy(), []
 
     # ---------------------------------------------------------
-    # DETECTION
+    # MAIN DETECTION
     # ---------------------------------------------------------
 
     def _run_detection(self, frame):
@@ -187,67 +271,15 @@ class FrameProcessor:
 
         violations = []
 
-        # =====================================================
-        # 1. HELMET MODEL
-        # =====================================================
-
-        helmet_results = self.model(
-            frame,
-            conf=0.30,
-            verbose=False
-        )[0]
-
-        helmet_objects = []
-
-        for box in helmet_results.boxes:
-
-            cls = int(box.cls[0])
-
-            conf = float(box.conf[0])
-
-            x1, y1, x2, y2 = map(
-                int,
-                box.xyxy[0]
-            )
-
-            helmet_label = str(
-                self.model.names.get(cls, cls)
-            )
-
-            helmet_status = self.class_map.get(
-                cls,
-                "unknown"
-            )
-
-            helmet_objects.append({
-
-                "bbox": (
-                    x1,
-                    y1,
-                    x2,
-                    y2
-                ),
-
-                "confidence": conf,
-
-                "helmet": (
-                    True
-                    if helmet_status == "yes"
-                    else False
-                    if helmet_status == "no"
-                    else None
-                ),
-
-                "helmet_class": helmet_label
-            })
-
-        # =====================================================
-        # 2. BYTE TRACK VEHICLES
-        # =====================================================
-
         motorcycles = []
 
         cars = []
+
+        persons = []
+
+        # =====================================================
+        # 1. COCO PERSON + VEHICLE TRACKING
+        # =====================================================
 
         if self.coco_model is not None:
 
@@ -257,18 +289,21 @@ class FrameProcessor:
 
                     frame,
 
-                    conf=0.30,
+                    conf=0.20,
 
                     classes=[
+                        0,  # person
                         2,  # car
-                        3   # motorcycle
+                        3,  # motorcycle
                     ],
 
                     persist=True,
 
                     tracker=self.tracker_name,
 
-                    verbose=False
+                    verbose=False,
+
+                    imgsz=960,
 
                 )[0]
 
@@ -295,7 +330,9 @@ class FrameProcessor:
 
                     for i, box in enumerate(boxes):
 
-                        cls = int(box.cls[0])
+                        cls = int(
+                            box.cls[0]
+                        )
 
                         conf = float(
                             box.conf[0]
@@ -306,9 +343,11 @@ class FrameProcessor:
                             box.xyxy[0]
                         )
 
-                        track_id = track_ids[i]
+                        track_id = (
+                            track_ids[i]
+                        )
 
-                        vehicle = {
+                        obj = {
 
                             "bbox": (
                                 x1,
@@ -326,11 +365,14 @@ class FrameProcessor:
                             )
                         }
 
-                        # Motorcycle
-                        if cls == 3:
+                        # ---------------------------------
+                        # PERSON
+                        # ---------------------------------
 
-                            motorcycles.append(
-                                vehicle
+                        if cls == 0:
+
+                            persons.append(
+                                obj
                             )
 
                             cv2.rectangle(
@@ -342,26 +384,21 @@ class FrameProcessor:
                                 (x2, y2),
 
                                 self.COLORS[
-                                    "vehicle"
+                                    "person"
                                 ],
 
-                                2
+                                1
+
                             )
 
-                            self._put_vehicle_label(
+                        # ---------------------------------
+                        # CAR
+                        # ---------------------------------
 
-                                annotated,
-
-                                f"MOTORCYCLE ID:{track_id}",
-
-                                (x1, y1)
-                            )
-
-                        # Car
                         elif cls == 2:
 
                             cars.append(
-                                vehicle
+                                obj
                             )
 
                             cv2.rectangle(
@@ -377,6 +414,7 @@ class FrameProcessor:
                                 ],
 
                                 1
+
                             )
 
                             self._put_vehicle_label(
@@ -386,6 +424,43 @@ class FrameProcessor:
                                 f"CAR ID:{track_id}",
 
                                 (x1, y1)
+
+                            )
+
+                        # ---------------------------------
+                        # MOTORCYCLE
+                        # ---------------------------------
+
+                        elif cls == 3:
+
+                            motorcycles.append(
+                                obj
+                            )
+
+                            cv2.rectangle(
+
+                                annotated,
+
+                                (x1, y1),
+
+                                (x2, y2),
+
+                                self.COLORS[
+                                    "vehicle"
+                                ],
+
+                                2
+
+                            )
+
+                            self._put_vehicle_label(
+
+                                annotated,
+
+                                f"MOTORCYCLE ID:{track_id}",
+
+                                (x1, y1)
+
                             )
 
             except Exception as e:
@@ -396,61 +471,117 @@ class FrameProcessor:
                 )
 
         # =====================================================
-        # 3. ASSOCIATE HELMET WITH MOTORCYCLE
+        # 2. PROCESS EACH MOTORCYCLE
         # =====================================================
-
-        used_helmet = set()
 
         for moto in motorcycles:
 
-            riders = self._heads_on_moto(
+            rider = self._find_rider(
 
                 moto["bbox"],
 
-                helmet_objects
+                persons
 
             )
 
-            if not riders:
-
-                continue
-
-            rider = self._identify_rider(
-
-                moto["bbox"],
-
-                riders
-
-            )
+            # -------------------------------------------------
+            # If COCO person detector missed the rider,
+            # create a fallback rider region from motorcycle.
+            # -------------------------------------------------
 
             if rider is None:
 
-                continue
+                rider_bbox = (
+                    self._estimate_rider_region(
+                        moto["bbox"],
+                        frame.shape
+                    )
+                )
 
-            rider_index = id(rider)
+                rider = {
 
-            used_helmet.add(
-                rider_index
-            )
+                    "bbox": rider_bbox,
+
+                    "confidence": 0.20,
+
+                    "track_id": None,
+
+                    "estimated": True
+
+                }
+
+                print(
+                    "[Processor] Person detector missed "
+                    f"rider. Using estimated rider region "
+                    f"for motorcycle ID "
+                    f"{moto.get('track_id')}"
+                )
+
+            else:
+
+                rider["estimated"] = False
+
+            # -------------------------------------------------
+            # Draw rider region
+            # -------------------------------------------------
 
             rx1, ry1, rx2, ry2 = (
                 rider["bbox"]
             )
 
-            helmet_status = rider.get(
-                "helmet"
-            )
+            cv2.rectangle(
 
-            helmet_class = rider.get(
-                "helmet_class",
-                ""
+                annotated,
+
+                (rx1, ry1),
+
+                (rx2, ry2),
+
+                self.COLORS["person"],
+
+                1
+
             )
 
             # -------------------------------------------------
-            # HELMET PRESENT
+            # Detect helmet on rider
             # -------------------------------------------------
 
-            if helmet_status is True:
+            helmet = self._detect_helmet_on_rider(
+
+                frame,
+
+                rider["bbox"],
+
+                moto["bbox"]
+
+            )
+
+            if helmet is None:
+
+                continue
+
+            helmet_status = helmet[
+                "status"
+            ]
+
+            helmet_class = helmet[
+                "class"
+            ]
+
+            helmet_conf = helmet[
+                "confidence"
+            ]
+
+            head_bbox = helmet.get(
+                "head_bbox"
+            )
+
+            # =================================================
+            # SAFE HELMET
+            # =================================================
+
+            if helmet_status == "yes":
 
                 cv2.rectangle(
 
@@ -462,25 +593,28 @@ class FrameProcessor:
 
                     self.COLORS["safe"],
 
-                    3
+                    2
+
                 )
 
                 self._put_label(
 
                     annotated,
 
-                    f"HELMET: {helmet_class}",
+                    f"HELMET: {helmet_class} "
+                    f"{helmet_conf:.0%}",
 
                     (rx1, ry1),
 
                     self.COLORS["safe"]
+
                 )
 
-            # -------------------------------------------------
-            # NO / INVALID HELMET
-            # -------------------------------------------------
+            # =================================================
+            # HELMET VIOLATION
+            # =================================================
 
-            elif helmet_status is False:
+            elif helmet_status == "no":
 
                 cv2.rectangle(
 
@@ -493,120 +627,111 @@ class FrameProcessor:
                     self.COLORS["violation"],
 
                     3
+
                 )
 
                 self._put_label(
 
                     annotated,
 
-                    "NO HELMET",
+                    f"NO HELMET "
+                    f"{helmet_conf:.0%}",
 
                     (rx1, ry1),
 
                     self.COLORS["violation"]
+
                 )
 
-                # IMPORTANT:
-                # track_id belongs to the motorcycle.
-                #
-                # detector.py will use this ID to make sure
-                # the same rider is not saved repeatedly.
+                # ---------------------------------------------
+                # Draw head detection too
+                # ---------------------------------------------
+
+                if head_bbox is not None:
+
+                    hx1, hy1, hx2, hy2 = (
+                        head_bbox
+                    )
+
+                    cv2.rectangle(
+
+                        annotated,
+
+                        (hx1, hy1),
+
+                        (hx2, hy2),
+
+                        self.COLORS[
+                            "violation"
+                        ],
+
+                        2
+
+                    )
+
+                # ---------------------------------------------
+                # Create violation record
+                # ---------------------------------------------
 
                 violations.append({
 
-                    "type": "no_helmet",
+                    "type":
+                        "no_helmet",
 
                     "bbox": (
+
                         rx1,
+
                         ry1,
+
                         rx2,
+
                         ry2
+
                     ),
 
-                    "confidence": rider[
-                        "confidence"
-                    ],
+                    "confidence":
+                        helmet_conf,
 
-                    "plate": "UNKNOWN",
+                    "plate":
+                        "UNKNOWN",
 
-                    "track_id": moto.get(
-                        "track_id"
-                    ),
+                    "track_id":
+                        moto.get(
+                            "track_id"
+                        ),
 
-                    "helmet_type": helmet_class
+                    "helmet_type":
+                        helmet_class
+
                 })
 
         # =====================================================
-        # 4. DRAW UNASSOCIATED HELMET DETECTIONS
-        # =====================================================
-
-        for obj in helmet_objects:
-
-            if id(obj) in used_helmet:
-                continue
-
-            x1, y1, x2, y2 = obj[
-                "bbox"
-            ]
-
-            status = obj.get(
-                "helmet"
-            )
-
-            if status is True:
-
-                color = self.COLORS[
-                    "safe"
-                ]
-
-            elif status is False:
-
-                color = self.COLORS[
-                    "violation"
-                ]
-
-            else:
-
-                color = (
-                    150,
-                    150,
-                    150
-                )
-
-            cv2.rectangle(
-
-                annotated,
-
-                (x1, y1),
-
-                (x2, y2),
-
-                color,
-
-                1
-            )
-
-        # =====================================================
-        # 5. PLATE READING
+        # 3. PLATE READING
         # =====================================================
 
         if violations:
 
             try:
 
-                from utils.plate_reader import PlateReader
+                from utils.plate_reader import (
+                    PlateReader
+                )
 
                 reader = PlateReader()
 
                 for violation in violations:
 
-                    plate = reader.read_from_region(
+                    plate = (
+                        reader.read_from_region(
 
-                        frame,
+                            frame,
 
-                        violation["bbox"],
+                            violation["bbox"],
 
-                        expand=80
+                            expand=80
+
+                        )
                     )
 
                     if plate:
@@ -625,47 +750,55 @@ class FrameProcessor:
         return annotated, violations
 
     # =========================================================
-    # FIND PERSON/HEAD ABOVE MOTORCYCLE
+    # FIND RIDER
     # =========================================================
 
-    def _heads_on_moto(
+    def _find_rider(
         self,
         motorcycle_bbox,
         persons
     ):
 
+        if not persons:
+
+            return None
+
         mx1, my1, mx2, my2 = (
             motorcycle_bbox
         )
 
-        mw = mx2 - mx1
+        mw = max(
+            mx2 - mx1,
+            1
+        )
 
-        mh = my2 - my1
+        mh = max(
+            my2 - my1,
+            1
+        )
 
-        # Search above motorcycle
-        # for helmet/head detections.
+        motorcycle_center_x = (
+            mx1 + mx2
+        ) / 2
 
+        candidates = []
+
+        # Search a generous region around motorcycle.
         zone_x1 = (
-            mx1 -
-            int(mw * 0.30)
+            mx1 - int(mw * 0.45)
         )
 
         zone_x2 = (
-            mx2 +
-            int(mw * 0.30)
+            mx2 + int(mw * 0.45)
         )
 
         zone_y1 = (
-            my1 -
-            int(mh * 1.5)
+            my1 - int(mh * 2.5)
         )
 
         zone_y2 = (
-            my2 +
-            int(mh * 0.15)
+            my2 + int(mh * 0.20)
         )
-
-        matched = []
 
         for person in persons:
 
@@ -673,104 +806,700 @@ class FrameProcessor:
                 person["bbox"]
             )
 
-            center_x = (
+            pcx = (
                 px1 + px2
             ) / 2
 
-            center_y = (
+            pcy = (
                 py1 + py2
             ) / 2
 
-            if (
-
-                zone_x1 <= center_x <= zone_x2
-
+            # Center must be near motorcycle.
+            if not (
+                zone_x1 <= pcx <= zone_x2
                 and
-
-                zone_y1 <= center_y <= zone_y2
-
+                zone_y1 <= pcy <= zone_y2
             ):
 
-                matched.append(
+                continue
+
+            # Horizontal distance.
+            horizontal_distance = abs(
+                pcx -
+                motorcycle_center_x
+            )
+
+            horizontal_score = max(
+
+                0.0,
+
+                1.0 -
+                horizontal_distance /
+                max(mw * 1.5, 1)
+
+            )
+
+            # Person should overlap/approach
+            # the motorcycle area.
+            overlap = self._bbox_overlap_ratio(
+
+                person["bbox"],
+
+                motorcycle_bbox
+
+            )
+
+            # Prefer person whose lower body
+            # is close to motorcycle.
+            lower_distance = abs(
+                py2 - my1
+            )
+
+            vertical_score = max(
+
+                0.0,
+
+                1.0 -
+                lower_distance /
+                max(mh * 2.0, 1)
+
+            )
+
+            score = (
+
+                horizontal_score * 0.45
+
+                +
+
+                overlap * 0.30
+
+                +
+
+                vertical_score * 0.25
+
+            )
+
+            candidates.append(
+                (
+                    score,
                     person
                 )
+            )
 
-        return matched
+        if not candidates:
 
-    # =========================================================
-    # SELECT RIDER
-    # =========================================================
-
-    def _identify_rider(
-        self,
-        motorcycle_bbox,
-        persons
-    ):
-
-        if not persons:
             return None
 
-        if len(persons) == 1:
-            return persons[0]
+        candidates.sort(
+            key=lambda x: x[0],
+            reverse=True
+        )
+
+        best_score, best_person = (
+            candidates[0]
+        )
+
+        # Avoid unrelated people.
+        if best_score < 0.20:
+
+            return None
+
+        return best_person
+
+    # =========================================================
+    # FALLBACK RIDER REGION
+    # =========================================================
+
+    def _estimate_rider_region(
+        self,
+        motorcycle_bbox,
+        frame_shape
+    ):
+
+        frame_h, frame_w = (
+            frame_shape[:2]
+        )
 
         mx1, my1, mx2, my2 = (
             motorcycle_bbox
         )
 
-        motorcycle_center = (
-            mx1 + mx2
-        ) / 2
+        mw = max(
+            mx2 - mx1,
+            1
+        )
 
-        def score(person):
+        mh = max(
+            my2 - my1,
+            1
+        )
 
-            x1, y1, x2, y2 = (
-                person["bbox"]
-            )
+        # Rider normally sits above motorcycle.
+        x1 = int(
+            mx1 - mw * 0.20
+        )
 
-            person_center = (
-                x1 + x2
-            ) / 2
+        x2 = int(
+            mx2 + mw * 0.20
+        )
 
-            horizontal_distance = abs(
-                person_center -
-                motorcycle_center
-            )
+        # Extend substantially upward
+        # for small/distant riders.
+        y1 = int(
+            my1 - mh * 1.30
+        )
 
-            motorcycle_width = max(
-                mx2 - mx1,
-                1
-            )
+        y2 = int(
+            my2 + mh * 0.05
+        )
 
-            horizontal_score = max(
+        x1 = max(
+            0,
+            x1
+        )
 
-                0,
+        y1 = max(
+            0,
+            y1
+        )
 
-                1 -
-                horizontal_distance /
-                motorcycle_width
-            )
+        x2 = min(
+            frame_w - 1,
+            x2
+        )
 
-            # Prefer the person whose
-            # center is lower/closer to
-            # the motorcycle.
+        y2 = min(
+            frame_h - 1,
+            y2
+        )
 
-            vertical_score = (
-                (y1 + y2) / 2
-            )
-
-            return (
-                horizontal_score * 0.7
-                +
-                vertical_score * 0.3
-            )
-
-        return max(
-            persons,
-            key=score
+        return (
+            x1,
+            y1,
+            x2,
+            y2
         )
 
     # =========================================================
-    # DRAW VEHICLE LABEL
+    # HELMET DETECTION ON RIDER
+    # =========================================================
+
+    def _detect_helmet_on_rider(
+        self,
+        frame,
+        rider_bbox,
+        motorcycle_bbox
+    ):
+
+        if self.model is None:
+
+            return None
+
+        x1, y1, x2, y2 = (
+            rider_bbox
+        )
+
+        frame_h, frame_w = (
+            frame.shape[:2]
+        )
+
+        x1 = max(
+            0,
+            x1
+        )
+
+        y1 = max(
+            0,
+            y1
+        )
+
+        x2 = min(
+            frame_w,
+            x2
+        )
+
+        y2 = min(
+            frame_h,
+            y2
+        )
+
+        if x2 <= x1 or y2 <= y1:
+
+            return None
+
+        rider_crop = frame[
+            y1:y2,
+            x1:x2
+        ]
+
+        if rider_crop.size == 0:
+
+            return None
+
+        crop_h, crop_w = (
+            rider_crop.shape[:2]
+        )
+
+        # -----------------------------------------------------
+        # HEAD REGION
+        # -----------------------------------------------------
+
+        # The head is normally in the upper part
+        # of the rider bounding box.
+
+        head_y2 = max(
+
+            int(
+                crop_h * 0.60
+            ),
+
+            20
+
+        )
+
+        head_crop = rider_crop[
+            0:head_y2,
+            :
+        ]
+
+        if head_crop.size == 0:
+
+            return None
+
+        # -----------------------------------------------------
+        # UPSCALE SMALL RIDERS
+        # -----------------------------------------------------
+
+        target_width = 640
+
+        if crop_w < target_width:
+
+            scale = (
+                target_width /
+                max(crop_w, 1)
+            )
+
+            new_w = int(
+                crop_w * scale
+            )
+
+            new_h = int(
+                crop_h * scale
+            )
+
+            rider_crop = cv2.resize(
+
+                rider_crop,
+
+                (
+                    new_w,
+                    new_h
+                ),
+
+                interpolation=cv2.INTER_CUBIC
+
+            )
+
+            head_crop = rider_crop[
+                0:int(new_h * 0.60),
+                :
+            ]
+
+        # -----------------------------------------------------
+        # RUN HELMET MODEL
+        # -----------------------------------------------------
+
+        detections = []
+
+        try:
+
+            results = self.model(
+
+                rider_crop,
+
+                conf=0.12,
+
+                imgsz=640,
+
+                verbose=False
+
+            )[0]
+
+            if results.boxes is not None:
+
+                for box in results.boxes:
+
+                    cls = int(
+                        box.cls[0]
+                    )
+
+                    conf = float(
+                        box.conf[0]
+                    )
+
+                    hx1, hy1, hx2, hy2 = map(
+
+                        int,
+
+                        box.xyxy[0]
+
+                    )
+
+                    label = str(
+
+                        self.model.names.get(
+                            cls,
+                            cls
+                        )
+
+                    )
+
+                    status = self.class_map.get(
+
+                        cls,
+
+                        "unknown"
+
+                    )
+
+                    detections.append({
+
+                        "status":
+                            status,
+
+                        "class":
+                            label,
+
+                        "confidence":
+                            conf,
+
+                        "bbox": (
+
+                            hx1,
+
+                            hy1,
+
+                            hx2,
+
+                            hy2
+
+                        )
+
+                    })
+
+        except Exception as e:
+
+            print(
+                "[Processor] Rider helmet "
+                f"detection error: {e}"
+            )
+
+        # -----------------------------------------------------
+        # IF FULL RIDER CROP DID NOT FIND ANYTHING,
+        # RUN DIRECTLY ON HEAD CROP.
+        # -----------------------------------------------------
+
+        if not detections:
+
+            try:
+
+                head_results = self.model(
+
+                    head_crop,
+
+                    conf=0.10,
+
+                    imgsz=640,
+
+                    verbose=False
+
+                )[0]
+
+                if (
+                    head_results.boxes
+                    is not None
+                ):
+
+                    for box in (
+                        head_results.boxes
+                    ):
+
+                        cls = int(
+                            box.cls[0]
+                        )
+
+                        conf = float(
+                            box.conf[0]
+                        )
+
+                        hx1, hy1, hx2, hy2 = map(
+
+                            int,
+
+                            box.xyxy[0]
+
+                        )
+
+                        label = str(
+
+                            self.model.names.get(
+                                cls,
+                                cls
+                            )
+
+                        )
+
+                        status = (
+                            self.class_map.get(
+                                cls,
+                                "unknown"
+                            )
+                        )
+
+                        detections.append({
+
+                            "status":
+                                status,
+
+                            "class":
+                                label,
+
+                            "confidence":
+                                conf,
+
+                            "bbox": (
+
+                                hx1,
+
+                                hy1,
+
+                                hx2,
+
+                                hy2
+
+                            )
+
+                        })
+
+            except Exception as e:
+
+                print(
+                    "[Processor] Head helmet "
+                    f"detection error: {e}"
+                )
+
+        # -----------------------------------------------------
+        # NO DETECTION
+        # -----------------------------------------------------
+
+        if not detections:
+
+            return None
+
+        # -----------------------------------------------------
+        # REMOVE VERY WEAK / UNKNOWN RESULTS
+        # -----------------------------------------------------
+
+        detections = [
+
+            d for d in detections
+
+            if d["status"]
+            in ("yes", "no")
+
+        ]
+
+        if not detections:
+
+            return None
+
+        # -----------------------------------------------------
+        # SELECT BEST DETECTION
+        # -----------------------------------------------------
+
+        detections.sort(
+
+            key=lambda d:
+                d["confidence"],
+
+            reverse=True
+
+        )
+
+        best = detections[0]
+
+        # -----------------------------------------------------
+        # CONVERT HEAD BOX BACK TO ORIGINAL FRAME
+        # -----------------------------------------------------
+
+        bx1, by1, bx2, by2 = (
+            best["bbox"]
+        )
+
+        original_crop_w = (
+            x2 - x1
+        )
+
+        # Because the crop may have been
+        # upscaled, calculate scale.
+        if original_crop_w > 0:
+
+            scale_x = (
+                original_crop_w /
+                max(
+                    rider_crop.shape[1],
+                    1
+                )
+            )
+
+        else:
+
+            scale_x = 1.0
+
+        # For practical evidence,
+        # use rider upper region rather than
+        # relying on tiny model box.
+        head_original_x1 = int(
+            x1 +
+            bx1 * scale_x
+        )
+
+        head_original_x2 = int(
+            x1 +
+            bx2 * scale_x
+        )
+
+        original_crop_h = (
+            y2 - y1
+        )
+
+        if original_crop_h > 0:
+
+            scale_y = (
+                original_crop_h /
+                max(
+                    rider_crop.shape[0],
+                    1
+                )
+            )
+
+        else:
+
+            scale_y = 1.0
+
+        head_original_y1 = int(
+            y1 +
+            by1 * scale_y
+        )
+
+        head_original_y2 = int(
+            y1 +
+            by2 * scale_y
+        )
+
+        head_original_x1 = max(
+            0,
+            min(
+                frame_w - 1,
+                head_original_x1
+            )
+        )
+
+        head_original_y1 = max(
+            0,
+            min(
+                frame_h - 1,
+                head_original_y1
+            )
+        )
+
+        head_original_x2 = max(
+            0,
+            min(
+                frame_w - 1,
+                head_original_x2
+            )
+        )
+
+        head_original_y2 = max(
+            0,
+            min(
+                frame_h - 1,
+                head_original_y2
+            )
+        )
+
+        best["head_bbox"] = (
+
+            head_original_x1,
+
+            head_original_y1,
+
+            head_original_x2,
+
+            head_original_y2
+
+        )
+
+        return best
+
+    # =========================================================
+    # BBOX OVERLAP
+    # =========================================================
+
+    def _bbox_overlap_ratio(
+        self,
+        box_a,
+        box_b
+    ):
+
+        ax1, ay1, ax2, ay2 = box_a
+
+        bx1, by1, bx2, by2 = box_b
+
+        ix1 = max(
+            ax1,
+            bx1
+        )
+
+        iy1 = max(
+            ay1,
+            by1
+        )
+
+        ix2 = min(
+            ax2,
+            bx2
+        )
+
+        iy2 = min(
+            ay2,
+            by2
+        )
+
+        if ix2 <= ix1 or iy2 <= iy1:
+
+            return 0.0
+
+        intersection = (
+            ix2 - ix1
+        ) * (
+            iy2 - iy1
+        )
+
+        area_a = max(
+            (ax2 - ax1) *
+            (ay2 - ay1),
+            1
+        )
+
+        return (
+            intersection /
+            area_a
+        )
+
+    # =========================================================
+    # VEHICLE LABEL
     # =========================================================
 
     def _put_vehicle_label(
@@ -782,29 +1511,32 @@ class FrameProcessor:
 
         x, y = pos
 
-        font_scale = 0.42
-
-        thickness = 1
-
         cv2.putText(
 
             frame,
 
             text,
 
-            (x, max(y - 5, 15)),
+            (
+                x,
+                max(
+                    y - 5,
+                    15
+                )
+            ),
 
             cv2.FONT_HERSHEY_SIMPLEX,
 
-            font_scale,
+            0.42,
 
             self.COLORS["track"],
 
-            thickness
+            1
+
         )
 
     # =========================================================
-    # DRAW LABEL
+    # GENERAL LABEL
     # =========================================================
 
     def _put_label(
@@ -821,7 +1553,10 @@ class FrameProcessor:
 
         thickness = 2
 
-        (tw, th), _ = cv2.getTextSize(
+        (
+            tw,
+            th
+        ), _ = cv2.getTextSize(
 
             text,
 
@@ -830,6 +1565,7 @@ class FrameProcessor:
             font_scale,
 
             thickness
+
         )
 
         y = max(
@@ -854,6 +1590,7 @@ class FrameProcessor:
             color,
 
             -1
+
         )
 
         cv2.putText(
@@ -874,4 +1611,5 @@ class FrameProcessor:
             (255, 255, 255),
 
             thickness
+
         )

@@ -681,7 +681,7 @@ class ViolaWatchApp:
             cam_border,
             bg="#060a10",
             fg=TEXT2,
-            text="📹  NO VIDEO — Upload a video file",
+            text="📷  NO FEED — Click START DETECTION or Upload a video",
             font=("Segoe UI", 11),
             anchor="center",
             justify="center"
@@ -971,7 +971,7 @@ class ViolaWatchApp:
             d,
             bg="#060a10",
             width=336,
-            height=300
+            height=220
         )
 
         self.snap_frame.pack(
@@ -1282,7 +1282,7 @@ class ViolaWatchApp:
                         640
                     )
 
-                    max_height = 500
+                    max_height = 430
 
                     img.thumbnail(
                         (
@@ -1624,7 +1624,7 @@ class ViolaWatchApp:
                         640
                     )
 
-                    available_height = 500
+                    available_height = 430
 
                     img.thumbnail(
                         (
@@ -2065,7 +2065,7 @@ class ViolaWatchApp:
             )
 
             max_width = 336
-            max_height = 290
+            max_height = 220
 
             img.thumbnail(
                 (

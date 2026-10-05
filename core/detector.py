@@ -1,4 +1,15 @@
-"""ViolaWatch — Core Violation Detector Engine"""
+"""
+ViolaWatch - Core Violation Detector Engine
+
+Handles:
+- Video-file processing
+- Helmet violation verification
+- ByteTrack ID based duplicate prevention
+- Spatial duplicate prevention
+- Evidence snapshot
+- Database insertion
+- Flask/GUI frame streaming
+"""
 
 import cv2
 import os
@@ -10,11 +21,10 @@ from datetime import datetime
 from pathlib import Path
 import sys
 
-# ---------------------------------------------------------
-# PROJECT PATH
-# ---------------------------------------------------------
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(
+    0,
+    str(Path(__file__).parent.parent)
+)
 
 from utils.frame_processor import FrameProcessor
 import config as cfg
@@ -23,21 +33,31 @@ import config as cfg
 class ViolationDetector:
 
     # =========================================================
-    # INIT
+    # INITIALIZATION
     # =========================================================
 
-    def __init__(self, db=None, on_violation=None):
+    def __init__(
+        self,
+        db=None,
+        on_violation=None
+    ):
 
         self.db = db
         self.on_violation = on_violation
 
-        self.processor = FrameProcessor(cfg.CONFIDENCE)
+        self.processor = FrameProcessor(
+            cfg.CONFIDENCE
+        )
 
         self.is_running = False
         self.cap = None
 
         self._lock = threading.Lock()
         self._current_frame = None
+
+        # -----------------------------------------------------
+        # STATISTICS
+        # -----------------------------------------------------
 
         self.stats = {
             "fps": 0,
@@ -47,38 +67,69 @@ class ViolationDetector:
             "frames": 0
         }
 
-        # =====================================================
-        # TRACK / VIOLATION MEMORY
-        # =====================================================
+        # -----------------------------------------------------
+        # TRACK MEMORY
+        # -----------------------------------------------------
 
         self._saved_tracks = set()
 
-        # =====================================================
+        # -----------------------------------------------------
+        # SAVED EVENT MEMORY
+        #
+        # This is the important duplicate protection.
+        #
+        # Even if ByteTrack changes:
+        #
+        #     ID 14 -> ID 18
+        #
+        # the spatial check can still recognize that it is
+        # the same vehicle/event.
+        # -----------------------------------------------------
+
+        self._saved_events = []
+
+        # -----------------------------------------------------
         # VERIFICATION BUFFER
-        # =====================================================
+        # -----------------------------------------------------
 
         self._verify_buf = {}
 
         self.VERIFY_HITS = 3
         self.VERIFY_WINDOW = 30
 
+        # -----------------------------------------------------
+        # SPATIAL GRID
+        # -----------------------------------------------------
+
         self.GRID = 120
 
+        # -----------------------------------------------------
+        # COOLDOWN
+        # -----------------------------------------------------
+
         self.COOLDOWN = max(
-            getattr(cfg, "COOLDOWN", 15),
+            getattr(
+                cfg,
+                "COOLDOWN",
+                15
+            ),
             30
         )
 
     # =========================================================
-    # LIVE CAMERA
+    # START LIVE
     # =========================================================
 
     def start_live(self, source=0):
 
-        self.cap = cv2.VideoCapture(source)
+        self.cap = cv2.VideoCapture(
+            source
+        )
 
         if not self.cap.isOpened():
+
             self.cap = None
+
             raise RuntimeError(
                 f"Cannot open source: {source}"
             )
@@ -101,6 +152,7 @@ class ViolationDetector:
         self.is_running = True
 
         self._saved_tracks.clear()
+        self._saved_events.clear()
         self._verify_buf.clear()
 
         thread = threading.Thread(
@@ -120,7 +172,9 @@ class ViolationDetector:
 
     def stop(self):
 
-        print("[Detector] Stop requested")
+        print(
+            "[Detector] Stop requested"
+        )
 
         self.is_running = False
 
@@ -146,37 +200,67 @@ class ViolationDetector:
                 ret, frame = self.cap.read()
 
                 if not ret:
+
                     time.sleep(0.05)
                     continue
 
                 frame_count += 1
                 fps_count += 1
 
-                if time.time() - fps_time >= 1.0:
+                if (
+                    time.time()
+                    - fps_time
+                    >= 1.0
+                ):
 
-                    self.stats["fps"] = fps_count
+                    self.stats["fps"] = (
+                        fps_count
+                    )
 
                     fps_count = 0
                     fps_time = time.time()
 
-                if frame_count % cfg.FRAME_SKIP != 0:
+                skip = max(
+                    getattr(
+                        cfg,
+                        "FRAME_SKIP",
+                        1
+                    ),
+                    1
+                )
+
+                if (
+                    frame_count % skip
+                    != 0
+                ):
+
                     continue
 
                 proc_frame += 1
-                self.stats["frames"] += 1
 
-                annotated, violations = \
-                    self.processor.process(frame)
+                self.stats["frames"] = (
+                    proc_frame
+                )
 
-                self._draw_hud(annotated)
+                annotated, violations = (
+                    self.processor.process(
+                        frame
+                    )
+                )
+
+                self._draw_hud(
+                    annotated
+                )
 
                 for violation in violations:
 
                     if not self.is_running:
                         break
 
-                    key = self._make_track_key(
-                        violation
+                    key = (
+                        self._make_track_key(
+                            violation
+                        )
                     )
 
                     self._verify_violation(
@@ -188,8 +272,10 @@ class ViolationDetector:
                     )
 
                 with self._lock:
-                    self._current_frame = \
+
+                    self._current_frame = (
                         annotated.copy()
+                    )
 
         except Exception as e:
 
@@ -206,8 +292,7 @@ class ViolationDetector:
                 except Exception:
                     pass
 
-                self.cap = None
-
+            self.cap = None
             self.is_running = False
 
             print(
@@ -215,7 +300,7 @@ class ViolationDetector:
             )
 
     # =========================================================
-    # VIDEO FILE
+    # START VIDEO FILE
     # =========================================================
 
     def process_video_file(
@@ -228,7 +313,11 @@ class ViolationDetector:
 
         self.is_running = True
 
+        # IMPORTANT:
+        # Start a completely new event session.
+
         self._saved_tracks.clear()
+        self._saved_events.clear()
         self._verify_buf.clear()
 
         self.stats["total"] = 0
@@ -250,11 +339,12 @@ class ViolationDetector:
         thread.start()
 
         print(
-            f"[Detector] Video processing started: {path}"
+            "[Detector] Video processing started:",
+            path
         )
 
     # =========================================================
-    # VIDEO FILE LOOP
+    # VIDEO LOOP
     # =========================================================
 
     def _video_file_loop(
@@ -266,24 +356,30 @@ class ViolationDetector:
     ):
 
         cap = None
+
         violations_count = 0
         frame_count = 0
+        processed_frames = 0
 
         try:
 
-            # =================================================
+            # -------------------------------------------------
             # OPEN VIDEO
-            # =================================================
+            # -------------------------------------------------
 
-            cap = cv2.VideoCapture(path)
+            cap = cv2.VideoCapture(
+                path
+            )
 
             if not cap.isOpened():
 
                 print(
-                    "[Detector] ERROR: Cannot open video"
+                    "[Detector] ERROR: "
+                    "Cannot open video"
                 )
 
                 if done_cb:
+
                     done_cb(
                         0,
                         "Cannot open video"
@@ -293,9 +389,9 @@ class ViolationDetector:
 
             self.cap = cap
 
-            # =================================================
+            # -------------------------------------------------
             # VIDEO INFORMATION
-            # =================================================
+            # -------------------------------------------------
 
             total_frames = int(
                 cap.get(
@@ -303,20 +399,42 @@ class ViolationDetector:
                 )
             )
 
-            fps = cap.get(
-                cv2.CAP_PROP_FPS
-            ) or 25
-
-            cooldown_frames = int(
-                fps * max(
-                    getattr(cfg, "COOLDOWN", 15),
-                    15
+            fps = (
+                cap.get(
+                    cv2.CAP_PROP_FPS
                 )
+                or 25
             )
 
-            # =================================================
+            print(
+                f"[Detector] Total frames: "
+                f"{total_frames}"
+            )
+
+            print(
+                f"[Detector] FPS: {fps}"
+            )
+
+            # -------------------------------------------------
+            # FRAME SKIP
+            # -------------------------------------------------
+
+            skip = max(
+                getattr(
+                    cfg,
+                    "FRAME_SKIP",
+                    1
+                ),
+                1
+            )
+
+            print(
+                f"[Detector] Frame skip: {skip}"
+            )
+
+            # -------------------------------------------------
             # DATABASE JOB
-            # =================================================
+            # -------------------------------------------------
 
             if self.db and job_id:
 
@@ -335,60 +453,20 @@ class ViolationDetector:
                         e
                     )
 
-            # =================================================
-            # MEMORY
-            # =================================================
-
-            frame_seen = {}
-
-            self._verify_buf.clear()
-
-            processed_frames = 0
-
-            skip = max(
-                getattr(cfg, "FRAME_SKIP", 5),
-                5
-            )
-
-            print(
-                "[Detector] Video processing started"
-            )
-
-            print(
-                f"[Detector] Total frames: "
-                f"{total_frames}"
-            )
-
-            print(
-                f"[Detector] FPS: {fps}"
-            )
-
-            print(
-                f"[Detector] Frame skip: {skip}"
-            )
-
-            # =================================================
-            # MAIN VIDEO LOOP
-            # =================================================
+            # -------------------------------------------------
+            # VIDEO LOOP
+            # -------------------------------------------------
 
             while True:
-
-                # -------------------------------------------------
-                # STOP CHECK
-                # -------------------------------------------------
 
                 if not self.is_running:
 
                     print(
                         "[Detector] "
-                        "Video processing stopped by user"
+                        "Video stopped by user"
                     )
 
                     break
-
-                # -------------------------------------------------
-                # READ FRAME
-                # -------------------------------------------------
 
                 ret, frame = cap.read()
 
@@ -397,38 +475,30 @@ class ViolationDetector:
 
                 frame_count += 1
 
-                # -------------------------------------------------
-                # FRAME SKIP
-                # -------------------------------------------------
+                if (
+                    frame_count % skip
+                    != 0
+                ):
 
-                if frame_count % skip != 0:
                     continue
 
                 processed_frames += 1
 
-                self.stats["frames"] = processed_frames
+                self.stats["frames"] = (
+                    processed_frames
+                )
 
                 # -------------------------------------------------
-                # STOP CHECK BEFORE AI
-                # -------------------------------------------------
-
-                if not self.is_running:
-
-                    print(
-                        "[Detector] "
-                        "Stop requested before AI processing"
-                    )
-
-                    break
-
-                # =================================================
                 # AI PROCESSING
-                # =================================================
+                # -------------------------------------------------
 
                 try:
 
-                    annotated, violations = \
-                        self.processor.process(frame)
+                    annotated, violations = (
+                        self.processor.process(
+                            frame
+                        )
+                    )
 
                 except Exception as e:
 
@@ -439,18 +509,9 @@ class ViolationDetector:
 
                     continue
 
-                # =================================================
-                # UPDATE VIDEO PREVIEW
-                # =================================================
-
-                with self._lock:
-
-                    self._current_frame = \
-                        annotated.copy()
-
-                # =================================================
-                # DRAW HUD
-                # =================================================
+                # -------------------------------------------------
+                # HUD
+                # -------------------------------------------------
 
                 self._draw_hud(
                     annotated
@@ -458,50 +519,37 @@ class ViolationDetector:
 
                 with self._lock:
 
-                    self._current_frame = \
+                    self._current_frame = (
                         annotated.copy()
+                    )
 
                 # =================================================
-                # PROCESS VIOLATIONS
+                # PROCESS DETECTED VIOLATIONS
                 # =================================================
 
                 for violation in violations:
 
                     if not self.is_running:
-
-                        print(
-                            "[Detector] "
-                            "Stop requested during violation processing"
-                        )
-
                         break
 
+                    key = (
+                        self._make_track_key(
+                            violation
+                        )
+                    )
+
                     # -------------------------------------------------
-                    # CREATE TRACK KEY
+                    # DUPLICATE CHECK #1
                     # -------------------------------------------------
 
-                    key = self._make_track_key(
+                    if self._already_saved_event(
                         violation
-                    )
-
-                    # -------------------------------------------------
-                    # COOLDOWN CHECK
-                    # -------------------------------------------------
-
-                    last_seen = frame_seen.get(
-                        key,
-                        -cooldown_frames - 1
-                    )
-
-                    if (
-                        frame_count - last_seen
-                        < cooldown_frames
                     ):
 
                         continue
 
                     # -------------------------------------------------
-                    # GET VERIFICATION BUFFER
+                    # VERIFICATION
                     # -------------------------------------------------
 
                     buf = self._verify_buf.get(
@@ -509,7 +557,7 @@ class ViolationDetector:
                     )
 
                     # -------------------------------------------------
-                    # NEW VIOLATION
+                    # NEW EVENT
                     # -------------------------------------------------
 
                     if buf is None:
@@ -532,47 +580,56 @@ class ViolationDetector:
                         }
 
                         print(
-                            "[Verify] "
-                            f"New: {key} "
-                            f"hit=1/"
-                            f"{self.VERIFY_HITS}"
+                            "[Verify] New:",
+                            key,
+                            "hit=1/",
+                            self.VERIFY_HITS
                         )
 
                         continue
 
                     # -------------------------------------------------
-                    # ALREADY SAVED
+                    # ALREADY COMMITTED
                     # -------------------------------------------------
 
                     if buf["committed"]:
+
                         continue
 
                     # -------------------------------------------------
-                    # VERIFICATION WINDOW
+                    # CHECK VERIFICATION WINDOW
                     # -------------------------------------------------
 
                     if (
                         processed_frames
-                        - buf["first_frame"]
-                        > self.VERIFY_WINDOW
+                        -
+                        buf["first_frame"]
+                        >
+                        self.VERIFY_WINDOW
                     ):
 
                         buf["hits"] = 1
 
-                        buf["first_frame"] = \
+                        buf["first_frame"] = (
                             processed_frames
+                        )
 
-                        buf["last_frame"] = \
+                        buf["last_frame"] = (
                             frame.copy()
+                        )
 
-                        buf["last_v"] = \
+                        buf["last_v"] = (
                             violation
+                        )
 
-                        buf["committed"] = False
+                        buf["committed"] = (
+                            False
+                        )
 
                         print(
                             "[Verify] "
-                            f"Window reset: {key}"
+                            "Window reset:",
+                            key
                         )
 
                         continue
@@ -583,49 +640,76 @@ class ViolationDetector:
 
                     buf["hits"] += 1
 
-                    buf["last_frame"] = \
+                    buf["last_frame"] = (
                         frame.copy()
+                    )
 
-                    buf["last_v"] = \
+                    buf["last_v"] = (
                         violation
+                    )
 
                     print(
-                        "[Verify] "
-                        f"track={key} "
+                        "[Verify]",
+                        key,
                         f"hit={buf['hits']}/"
                         f"{self.VERIFY_HITS}"
                     )
 
                     # -------------------------------------------------
-                    # CONFIRM VIOLATION
+                    # CONFIRM
                     # -------------------------------------------------
 
                     if (
                         buf["hits"]
-                        >= self.VERIFY_HITS
+                        >=
+                        self.VERIFY_HITS
                     ):
 
                         if buf["committed"]:
                             continue
 
-                        buf["committed"] = True
+                        # -------------------------------------------------
+                        # DUPLICATE CHECK #2
+                        #
+                        # Check again immediately before saving.
+                        # -------------------------------------------------
+
+                        if self._already_saved_event(
+                            buf["last_v"]
+                        ):
+
+                            buf["committed"] = (
+                                True
+                            )
+
+                            continue
+
+                        buf["committed"] = (
+                            True
+                        )
 
                         self._saved_tracks.add(
                             key
                         )
 
-                        frame_seen[key] = \
-                            frame_count
-
                         print(
-                            "[Verify] "
-                            f"CONFIRMED: {key}"
+                            "[Verify] CONFIRMED:",
+                            key
                         )
 
                         self._save_violation(
                             buf["last_frame"],
                             buf["last_v"],
                             source_type="video"
+                        )
+
+                        # -------------------------------------------------
+                        # Remember this saved event
+                        # -------------------------------------------------
+
+                        self._remember_saved_event(
+                            buf["last_v"],
+                            processed_frames
                         )
 
                         violations_count += 1
@@ -636,38 +720,52 @@ class ViolationDetector:
 
                 old_keys = []
 
-                for key, buf in \
-                        self._verify_buf.items():
+                for key, buf in (
+                    self._verify_buf.items()
+                ):
 
                     if (
                         processed_frames
-                        - buf["first_frame"]
-                        > self.VERIFY_WINDOW * 2
+                        -
+                        buf["first_frame"]
+                        >
+                        self.VERIFY_WINDOW * 2
                     ):
 
-                        old_keys.append(key)
+                        old_keys.append(
+                            key
+                        )
 
                 for key in old_keys:
 
-                    try:
-                        del self._verify_buf[key]
-                    except KeyError:
-                        pass
+                    self._verify_buf.pop(
+                        key,
+                        None
+                    )
 
                 # =================================================
-                # PROGRESS CALLBACK
+                # PROGRESS
                 # =================================================
 
                 if (
                     progress_cb
-                    and frame_count % (skip * 10) == 0
+                    and
+                    frame_count
+                    %
+                    max(skip * 10, 1)
+                    == 0
                 ):
 
                     percent = int(
                         (
                             frame_count
-                            / max(total_frames, 1)
-                        ) * 100
+                            /
+                            max(
+                                total_frames,
+                                1
+                            )
+                        )
+                        * 100
                     )
 
                     progress_cb(
@@ -683,7 +781,11 @@ class ViolationDetector:
                 if (
                     self.db
                     and job_id
-                    and frame_count % (skip * 30) == 0
+                    and
+                    frame_count
+                    %
+                    max(skip * 30, 1)
+                    == 0
                 ):
 
                     try:
@@ -704,14 +806,14 @@ class ViolationDetector:
                         )
 
             # =====================================================
-            # VIDEO LOOP FINISHED
+            # COMPLETION
             # =====================================================
 
             if not self.is_running:
 
                 print(
                     "[Detector] "
-                    "Video stopped by user."
+                    "Video stopped."
                 )
 
                 print(
@@ -732,13 +834,8 @@ class ViolationDetector:
                                 violations_count
                         )
 
-                    except Exception as e:
-
-                        print(
-                            "[Detector] "
-                            "Stop DB update error:",
-                            e
-                        )
+                    except Exception:
+                        pass
 
                 if done_cb:
 
@@ -748,10 +845,6 @@ class ViolationDetector:
                     )
 
                 return
-
-            # =====================================================
-            # NORMAL COMPLETION
-            # =====================================================
 
             print(
                 "[Detector] "
@@ -766,8 +859,8 @@ class ViolationDetector:
 
             print(
                 "[Detector] "
-                f"Unique tracks saved: "
-                f"{len(self._saved_tracks)}"
+                f"Unique events: "
+                f"{len(self._saved_events)}"
             )
 
             if self.db and job_id:
@@ -780,14 +873,15 @@ class ViolationDetector:
                         processed=total_frames,
                         violations_found=
                             violations_count,
-                        completed_at=datetime.now()
+                        completed_at=
+                            datetime.now()
                     )
 
                 except Exception as e:
 
                     print(
                         "[Detector] "
-                        "Completion DB update error:",
+                        "Completion DB error:",
                         e
                     )
 
@@ -800,16 +894,13 @@ class ViolationDetector:
 
         except Exception as e:
 
-            # =================================================
-            # UNEXPECTED ERROR
-            # =================================================
-
             print(
                 "[Detector] "
                 f"Video loop error: {e}"
             )
 
             import traceback
+
             traceback.print_exc()
 
             if self.db and job_id:
@@ -836,10 +927,6 @@ class ViolationDetector:
 
         finally:
 
-            # =================================================
-            # ALWAYS RELEASE VIDEO
-            # =================================================
-
             if cap is not None:
 
                 try:
@@ -848,46 +935,37 @@ class ViolationDetector:
                     pass
 
             self.cap = None
-
             self.is_running = False
 
             print(
-                "[Detector] Video capture released"
+                "[Detector] "
+                "Video capture released"
             )
 
     # =========================================================
     # CREATE TRACK KEY
     # =========================================================
 
-    def _make_track_key(self, violation):
+    def _make_track_key(
+        self,
+        violation
+    ):
 
-        """
-        Create a unique key using:
-
-            violation type
-            +
-            ByteTrack track ID
-
-        Example:
-
-            ("no_helmet", 1)
-            ("no_helmet", 2)
-
-        If track_id is unavailable,
-        bounding-box position is used as fallback.
-        """
-
-        violation_type = violation.get(
-            "type",
-            "unknown"
+        violation_type = (
+            violation.get(
+                "type",
+                "unknown"
+            )
         )
 
-        track_id = violation.get(
-            "track_id"
+        track_id = (
+            violation.get(
+                "track_id"
+            )
         )
 
         # -----------------------------------------------------
-        # NORMAL CASE — ByteTrack ID
+        # ByteTrack ID
         # -----------------------------------------------------
 
         if track_id is not None:
@@ -907,12 +985,14 @@ class ViolationDetector:
             )
 
         # -----------------------------------------------------
-        # FALLBACK
+        # FALLBACK GRID
         # -----------------------------------------------------
 
-        x1, y1, x2, y2 = violation.get(
-            "bbox",
-            (0, 0, 100, 100)
+        x1, y1, x2, y2 = (
+            violation.get(
+                "bbox",
+                (0, 0, 100, 100)
+            )
         )
 
         cx = int(
@@ -931,7 +1011,319 @@ class ViolationDetector:
         )
 
     # =========================================================
-    # VIOLATION VERIFICATION
+    # DUPLICATE EVENT CHECK
+    # =========================================================
+
+    def _already_saved_event(
+        self,
+        violation
+    ):
+
+        violation_type = (
+            violation.get(
+                "type",
+                "unknown"
+            )
+        )
+
+        current_track = (
+            violation.get(
+                "track_id"
+            )
+        )
+
+        current_bbox = (
+            violation.get(
+                "bbox",
+                (0, 0, 0, 0)
+            )
+        )
+
+        # -----------------------------------------------------
+        # Check all saved events
+        # -----------------------------------------------------
+
+        for event in self._saved_events:
+
+            if (
+                event["type"]
+                !=
+                violation_type
+            ):
+
+                continue
+
+            saved_track = (
+                event.get(
+                    "track_id"
+                )
+            )
+
+            # -------------------------------------------------
+            # CASE 1:
+            # Same ByteTrack ID
+            # -------------------------------------------------
+
+            if (
+                current_track is not None
+                and
+                saved_track is not None
+                and
+                int(current_track)
+                ==
+                int(saved_track)
+            ):
+
+                return True
+
+            # -------------------------------------------------
+            # CASE 2:
+            # Spatial similarity
+            #
+            # Useful if ByteTrack changes ID.
+            # -------------------------------------------------
+
+            saved_bbox = (
+                event["bbox"]
+            )
+
+            if self._boxes_are_same_event(
+                current_bbox,
+                saved_bbox
+            ):
+
+                return True
+
+        return False
+
+    # =========================================================
+    # SAVE EVENT IN MEMORY
+    # =========================================================
+
+    def _remember_saved_event(
+        self,
+        violation,
+        frame_number
+    ):
+
+        bbox = violation.get(
+            "bbox",
+            (0, 0, 0, 0)
+        )
+
+        self._saved_events.append({
+
+            "type":
+                violation.get(
+                    "type",
+                    "unknown"
+                ),
+
+            "track_id":
+                violation.get(
+                    "track_id"
+                ),
+
+            "bbox":
+                tuple(
+                    map(
+                        int,
+                        bbox
+                    )
+                ),
+
+            "frame":
+                frame_number,
+
+            "time":
+                time.time()
+        })
+
+        print(
+            "[DuplicateGuard] "
+            f"Saved event remembered. "
+            f"Total events: "
+            f"{len(self._saved_events)}"
+        )
+
+    # =========================================================
+    # COMPARE TWO BOUNDING BOXES
+    # =========================================================
+
+    def _boxes_are_same_event(
+        self,
+        box_a,
+        box_b
+    ):
+
+        try:
+
+            ax1, ay1, ax2, ay2 = (
+                map(
+                    float,
+                    box_a
+                )
+            )
+
+            bx1, by1, bx2, by2 = (
+                map(
+                    float,
+                    box_b
+                )
+            )
+
+        except Exception:
+
+            return False
+
+        # -----------------------------------------------------
+        # Centers
+        # -----------------------------------------------------
+
+        acx = (
+            ax1 + ax2
+        ) / 2
+
+        acy = (
+            ay1 + ay2
+        ) / 2
+
+        bcx = (
+            bx1 + bx2
+        ) / 2
+
+        bcy = (
+            by1 + by2
+        ) / 2
+
+        # -----------------------------------------------------
+        # Sizes
+        # -----------------------------------------------------
+
+        aw = max(
+            ax2 - ax1,
+            1
+        )
+
+        ah = max(
+            ay2 - ay1,
+            1
+        )
+
+        bw = max(
+            bx2 - bx1,
+            1
+        )
+
+        bh = max(
+            by2 - by1,
+            1
+        )
+
+        # -----------------------------------------------------
+        # Center distance
+        # -----------------------------------------------------
+
+        dx = abs(
+            acx - bcx
+        )
+
+        dy = abs(
+            acy - bcy
+        )
+
+        # Allow larger movement for larger vehicles.
+        max_dx = max(
+            aw,
+            bw
+        ) * 1.5
+
+        max_dy = max(
+            ah,
+            bh
+        ) * 1.5
+
+        center_close = (
+            dx <= max_dx
+            and
+            dy <= max_dy
+        )
+
+        if center_close:
+
+            return True
+
+        # -----------------------------------------------------
+        # IoU
+        # -----------------------------------------------------
+
+        ix1 = max(
+            ax1,
+            bx1
+        )
+
+        iy1 = max(
+            ay1,
+            by1
+        )
+
+        ix2 = min(
+            ax2,
+            bx2
+        )
+
+        iy2 = min(
+            ay2,
+            by2
+        )
+
+        if (
+            ix2 <= ix1
+            or
+            iy2 <= iy1
+        ):
+
+            return False
+
+        intersection = (
+            ix2 - ix1
+        ) * (
+            iy2 - iy1
+        )
+
+        area_a = (
+            ax2 - ax1
+        ) * (
+            ay2 - ay1
+        )
+
+        area_b = (
+            bx2 - bx1
+        ) * (
+            by2 - by1
+        )
+
+        union = (
+            area_a
+            +
+            area_b
+            -
+            intersection
+        )
+
+        if union <= 0:
+
+            return False
+
+        iou = (
+            intersection /
+            union
+        )
+
+        return iou >= 0.15
+
+    # =========================================================
+    # GENERIC VERIFICATION
     # =========================================================
 
     def _verify_violation(
@@ -944,29 +1336,39 @@ class ViolationDetector:
     ):
 
         # -----------------------------------------------------
-        # Already saved
+        # Already saved by track ID
         # -----------------------------------------------------
 
         if key in self._saved_tracks:
+
             return
 
         # -----------------------------------------------------
-        # Get buffer
+        # Spatial duplicate
         # -----------------------------------------------------
+
+        if self._already_saved_event(
+            violation
+        ):
+
+            return
 
         buf = self._verify_buf.get(
             key
         )
 
         # -----------------------------------------------------
-        # NEW VIOLATION
+        # New
         # -----------------------------------------------------
 
         if (
             buf is None
-            or proc_frame
-            - buf["first_frame"]
-            > self.VERIFY_WINDOW
+            or
+            proc_frame
+            -
+            buf["first_frame"]
+            >
+            self.VERIFY_WINDOW
         ):
 
             self._verify_buf[key] = {
@@ -987,10 +1389,10 @@ class ViolationDetector:
             }
 
             print(
-                "[Verify] "
-                f"New violation: {key} "
-                f"hit=1/"
-                f"{self.VERIFY_HITS}"
+                "[Verify] New:",
+                key,
+                "1/",
+                self.VERIFY_HITS
             )
 
             return
@@ -1000,35 +1402,47 @@ class ViolationDetector:
         # -----------------------------------------------------
 
         if buf["committed"]:
+
             return
 
         # -----------------------------------------------------
-        # ADD HIT
+        # Add hit
         # -----------------------------------------------------
 
         buf["hits"] += 1
 
-        buf["last_frame"] = \
+        buf["last_frame"] = (
             frame.copy()
+        )
 
-        buf["last_v"] = \
+        buf["last_v"] = (
             violation
+        )
 
         print(
-            "[Verify] "
-            f"{key} "
-            f"hit={buf['hits']}/"
+            "[Verify]",
+            key,
+            f"{buf['hits']}/"
             f"{self.VERIFY_HITS}"
         )
 
         # -----------------------------------------------------
-        # CONFIRM
+        # Confirm
         # -----------------------------------------------------
 
         if (
             buf["hits"]
-            >= self.VERIFY_HITS
+            >=
+            self.VERIFY_HITS
         ):
+
+            # Final duplicate check.
+            if self._already_saved_event(
+                buf["last_v"]
+            ):
+
+                buf["committed"] = True
+                return
 
             buf["committed"] = True
 
@@ -1036,15 +1450,15 @@ class ViolationDetector:
                 key
             )
 
-            print(
-                "[Verify] "
-                f"CONFIRMED: {key}"
-            )
-
             self._save_violation(
                 buf["last_frame"],
                 buf["last_v"],
                 source_type=source_type
+            )
+
+            self._remember_saved_event(
+                buf["last_v"],
+                proc_frame
             )
 
     # =========================================================
@@ -1058,20 +1472,24 @@ class ViolationDetector:
         source_type="video"
     ):
 
-        violation_type = violation.get(
-            "type",
-            "unknown"
+        violation_type = (
+            violation.get(
+                "type",
+                "unknown"
+            )
         )
 
-        plate = violation.get(
-            "plate",
-            "UNKNOWN"
+        plate = (
+            violation.get(
+                "plate",
+                "UNKNOWN"
+            )
         )
 
         snap_filename = ""
 
         # =====================================================
-        # SAVE SNAPSHOT
+        # SNAPSHOT
         # =====================================================
 
         if getattr(
@@ -1085,8 +1503,11 @@ class ViolationDetector:
                 exist_ok=True
             )
 
-            timestamp = datetime.now().strftime(
-                "%Y%m%d_%H%M%S_%f"
+            timestamp = (
+                datetime.now()
+                .strftime(
+                    "%Y%m%d_%H%M%S_%f"
+                )
             )
 
             safe_plate = str(
@@ -1102,22 +1523,26 @@ class ViolationDetector:
                 f"{timestamp}.jpg"
             )
 
-            snapshot_path = os.path.join(
-                cfg.SNAPSHOT_DIR,
-                filename
+            snapshot_path = (
+                os.path.join(
+                    cfg.SNAPSHOT_DIR,
+                    filename
+                )
             )
 
             # -------------------------------------------------
-            # ORIGINAL BOUNDING BOX
+            # BBOX
             # -------------------------------------------------
 
-            x1, y1, x2, y2 = violation.get(
-                "bbox",
-                (
-                    0,
-                    0,
-                    frame.shape[1],
-                    frame.shape[0]
+            x1, y1, x2, y2 = (
+                violation.get(
+                    "bbox",
+                    (
+                        0,
+                        0,
+                        frame.shape[1],
+                        frame.shape[0]
+                    )
                 )
             )
 
@@ -1142,7 +1567,7 @@ class ViolationDetector:
             )
 
             # -------------------------------------------------
-            # LARGER CONTEXT CROP
+            # CONTEXT CROP
             # -------------------------------------------------
 
             margin = 100
@@ -1172,13 +1597,10 @@ class ViolationDetector:
                 crop_x1:crop_x2
             ]
 
-            # -------------------------------------------------
-            # SAVE
-            # -------------------------------------------------
-
             if (
                 crop.size > 0
-                and cv2.imwrite(
+                and
+                cv2.imwrite(
                     snapshot_path,
                     crop
                 )
@@ -1204,11 +1626,9 @@ class ViolationDetector:
 
         if self.db:
 
-            # -------------------------------------------------
-            # FIXED LOCATION
-            # -------------------------------------------------
-
-            location = "Ramanagara-Bidadi Road"
+            location = (
+                "Ramanagara-Bidadi Road"
+            )
 
             data = {
 
@@ -1250,12 +1670,6 @@ class ViolationDetector:
                     plate
                 )
 
-                print(
-                    "[Database] "
-                    "Location:",
-                    location
-                )
-
             except Exception as e:
 
                 print(
@@ -1294,16 +1708,21 @@ class ViolationDetector:
 
                 print(
                     "[Detector] "
-                    f"Violation callback error: {e}"
+                    f"Callback error: {e}"
                 )
 
     # =========================================================
     # HUD
     # =========================================================
 
-    def _draw_hud(self, frame):
+    def _draw_hud(
+        self,
+        frame
+    ):
 
-        height, width = frame.shape[:2]
+        height, width = (
+            frame.shape[:2]
+        )
 
         overlay = frame.copy()
 
@@ -1325,35 +1744,57 @@ class ViolationDetector:
         )
 
         pending = sum(
+
             1
-            for buf in self._verify_buf.values()
+
+            for buf
+            in self._verify_buf.values()
+
             if not buf["committed"]
+
         )
 
         cv2.putText(
+
             frame,
+
             (
-                f"VIDEO  "
-                f"Confirmed:{self.stats['total']}  "
+                f"VIDEO "
+                f"Confirmed:"
+                f"{self.stats['total']} "
                 f"Verifying:{pending}"
             ),
+
             (10, 22),
+
             cv2.FONT_HERSHEY_SIMPLEX,
+
             0.60,
+
             (0, 230, 120),
+
             2
         )
 
         cv2.putText(
+
             frame,
+
             (
-                f"No Helmet:{self.stats['helmet']}  "
-                f"Verification x{self.VERIFY_HITS}"
+                f"No Helmet:"
+                f"{self.stats['helmet']} "
+                f"Verification x"
+                f"{self.VERIFY_HITS}"
             ),
+
             (10, 46),
+
             cv2.FONT_HERSHEY_SIMPLEX,
+
             0.46,
+
             (200, 180, 80),
+
             1
         )
 
@@ -1378,63 +1819,88 @@ class ViolationDetector:
         font_scale = 0.48
         thickness = 1
 
-        (tw, th), _ = cv2.getTextSize(
+        (
+            tw,
+            th
+        ), _ = cv2.getTextSize(
+
             text,
+
             cv2.FONT_HERSHEY_SIMPLEX,
+
             font_scale,
+
             thickness
         )
 
         cv2.rectangle(
+
             frame,
+
             (
                 x,
                 y - th - 4
             ),
+
             (
                 x + tw + 6,
                 y + 4
             ),
+
             (0, 160, 200),
+
             -1
         )
 
         cv2.putText(
+
             frame,
+
             text,
+
             (
                 x + 3,
                 y
             ),
+
             cv2.FONT_HERSHEY_SIMPLEX,
+
             font_scale,
+
             (255, 255, 255),
+
             thickness
         )
 
     # =========================================================
-    # CURRENT FRAME → BASE64
+    # FRAME TO BASE64
     # =========================================================
 
-    def get_frame_b64(self) -> str:
+    def get_frame_b64(self):
 
         with self._lock:
 
             if self._current_frame is None:
+
                 return ""
 
-            success, buffer = cv2.imencode(
-                ".jpg",
-                self._current_frame,
-                [
-                    cv2.IMWRITE_JPEG_QUALITY,
-                    78
-                ]
+            success, buffer = (
+                cv2.imencode(
+                    ".jpg",
+                    self._current_frame,
+                    [
+                        cv2.IMWRITE_JPEG_QUALITY,
+                        78
+                    ]
+                )
             )
 
             if not success:
+
                 return ""
 
-            return base64.b64encode(
-                buffer
-            ).decode()
+            return (
+                base64.b64encode(
+                    buffer
+                ).decode()
+            )
