@@ -39,6 +39,11 @@ class FrameProcessor:
         self.coco_model = None
         self.plate_model = None
 
+        # =====================================================
+        # SEATBELT MODEL
+        # =====================================================
+        self.seatbelt_model = None
+
         self.custom_model = False
         self.class_map = {}
 
@@ -101,6 +106,60 @@ class FrameProcessor:
             print(
                 "[Processor] ByteTrack enabled"
             )
+
+            # =================================================
+            # SEATBELT MODEL
+            # =================================================
+
+            seatbelt_path = os.path.join(
+                os.path.dirname(
+                    os.path.dirname(
+                        os.path.abspath(__file__)
+                    )
+                ),
+                "models",
+                "seatbelt_best.pt"
+            )
+
+            if os.path.exists(seatbelt_path):
+
+                try:
+
+                    self.seatbelt_model = YOLO(
+                        seatbelt_path
+                    )
+
+                    print(
+                        "[Processor] Seatbelt model loaded: "
+                        f"{seatbelt_path}"
+                    )
+
+                    print(
+                        "[Processor] Seatbelt classes:",
+                        self.seatbelt_model.names
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "[Processor] WARNING: "
+                        "Could not load seatbelt model:",
+                        e
+                    )
+
+                    self.seatbelt_model = None
+
+            else:
+
+                print(
+                    "[Processor] WARNING: "
+                    "seatbelt_best.pt not found:"
+                )
+
+                print(
+                    f"[Processor] Expected path: "
+                    f"{seatbelt_path}"
+                )
 
             # ---------------------------------------------
             # PLATE MODEL
@@ -707,7 +766,149 @@ class FrameProcessor:
                 })
 
         # =====================================================
-        # 3. PLATE READING
+        # 3. SEATBELT DETECTION ON CARS
+        # =====================================================
+
+        for car in cars:
+
+            car_bbox = car["bbox"]
+
+            seatbelt = (
+                self._detect_seatbelt_on_car(
+                    frame,
+                    car_bbox
+                )
+            )
+
+            if seatbelt is None:
+
+                continue
+
+            seatbelt_class = (
+                seatbelt["class"]
+            )
+
+            seatbelt_conf = (
+                seatbelt["confidence"]
+            )
+
+            seatbelt_bbox = (
+                seatbelt["bbox"]
+            )
+
+            sx1, sy1, sx2, sy2 = (
+                seatbelt_bbox
+            )
+
+            # =================================================
+            # SEATBELT PRESENT
+            # =================================================
+
+            if "with_seatbelt" in seatbelt_class:
+
+                cv2.rectangle(
+
+                    annotated,
+
+                    (sx1, sy1),
+
+                    (sx2, sy2),
+
+                    self.COLORS["safe"],
+
+                    2
+
+                )
+
+                self._put_label(
+
+                    annotated,
+
+                    f"SEATBELT "
+                    f"{seatbelt_conf:.0%}",
+
+                    (sx1, sy1),
+
+                    self.COLORS["safe"]
+
+                )
+
+            # =================================================
+            # NO SEATBELT
+            # =================================================
+
+            elif "without_seatbelt" in seatbelt_class:
+
+                cx1, cy1, cx2, cy2 = (
+                    car_bbox
+                )
+
+                cv2.rectangle(
+
+                    annotated,
+
+                    (cx1, cy1),
+
+                    (cx2, cy2),
+
+                    self.COLORS["violation"],
+
+                    3
+
+                )
+
+                self._put_label(
+
+                    annotated,
+
+                    f"NO SEATBELT "
+                    f"{seatbelt_conf:.0%}",
+
+                    (cx1, cy1),
+
+                    self.COLORS["violation"]
+
+                )
+
+                # ---------------------------------------------
+                # Create seatbelt violation
+                # ---------------------------------------------
+
+                violations.append({
+
+                    "type":
+                        "no_seatbelt",
+
+                    "bbox": (
+
+                        cx1,
+
+                        cy1,
+
+                        cx2,
+
+                        cy2
+
+                    ),
+
+                    "confidence":
+                        seatbelt_conf,
+
+                    "plate":
+                        "UNKNOWN",
+
+                    "track_id":
+                        car.get(
+                            "track_id"
+                        ),
+
+                    "seatbelt_type":
+                        seatbelt_class
+
+                })
+
+        # =====================================================
+        # 4. PLATE READING
         # =====================================================
 
         if violations:
@@ -748,6 +949,178 @@ class FrameProcessor:
                 )
 
         return annotated, violations
+
+    # =========================================================
+    # SEATBELT DETECTION ON CAR
+    # =========================================================
+
+    def _detect_seatbelt_on_car(
+        self,
+        frame,
+        car_bbox
+    ):
+
+        if self.seatbelt_model is None:
+
+            return None
+
+        x1, y1, x2, y2 = (
+            car_bbox
+        )
+
+        frame_h, frame_w = (
+            frame.shape[:2]
+        )
+
+        # -----------------------------------------------------
+        # Keep coordinates inside frame
+        # -----------------------------------------------------
+
+        x1 = max(
+            0,
+            int(x1)
+        )
+
+        y1 = max(
+            0,
+            int(y1)
+        )
+
+        x2 = min(
+            frame_w,
+            int(x2)
+        )
+
+        y2 = min(
+            frame_h,
+            int(y2)
+        )
+
+        if x2 <= x1 or y2 <= y1:
+
+            return None
+
+        # -----------------------------------------------------
+        # Extract car
+        # -----------------------------------------------------
+
+        car_crop = frame[
+            y1:y2,
+            x1:x2
+        ]
+
+        if car_crop.size == 0:
+
+            return None
+
+        try:
+
+            results = self.seatbelt_model(
+
+                car_crop,
+
+                conf=0.40,
+
+                imgsz=640,
+
+                verbose=False
+
+            )[0]
+
+        except Exception as e:
+
+            print(
+                "[Processor] Seatbelt detection "
+                f"error: {e}"
+            )
+
+            return None
+
+        if results.boxes is None:
+
+            return None
+
+        detections = []
+
+        # -----------------------------------------------------
+        # Read seatbelt detections
+        # -----------------------------------------------------
+
+        for box in results.boxes:
+
+            cls = int(
+                box.cls[0]
+            )
+
+            conf = float(
+                box.conf[0]
+            )
+
+            bx1, by1, bx2, by2 = map(
+
+                int,
+
+                box.xyxy[0]
+
+            )
+
+            label = str(
+
+                self.seatbelt_model.names.get(
+                    cls,
+                    cls
+                )
+
+            ).lower().strip()
+
+            # -------------------------------------------------
+            # Convert crop coordinates into
+            # original video coordinates
+            # -------------------------------------------------
+
+            original_bbox = (
+
+                x1 + bx1,
+
+                y1 + by1,
+
+                x1 + bx2,
+
+                y1 + by2
+
+            )
+
+            detections.append({
+
+                "class":
+                    label,
+
+                "confidence":
+                    conf,
+
+                "bbox":
+                    original_bbox
+
+            })
+
+        if not detections:
+
+            return None
+
+        # -----------------------------------------------------
+        # Select highest-confidence detection
+        # -----------------------------------------------------
+
+        detections.sort(
+
+            key=lambda d:
+                d["confidence"],
+
+            reverse=True
+
+        )
+
+        return detections[0]
 
     # =========================================================
     # FIND RIDER

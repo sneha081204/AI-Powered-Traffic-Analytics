@@ -1,4 +1,4 @@
-# 🚦 ViolaWatch — Traffic Violation Detection System
+# 🚦 TRAQVEXA — Traffic Violation Detection System
 
 Real-time detection of **no-helmet motorcyclists** and **seatbelt violations**,  
 with **license plate recognition**, MySQL storage, Desktop GUI, and web dashboard.
